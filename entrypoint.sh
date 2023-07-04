@@ -1,4 +1,5 @@
 #!/bin/env bash
 
 mount -t debugfs none /sys/kernel/debug
-/app/dropit eth0
+apache2ctl start
+INTERFACE_NAME=eth0 /app/dropit

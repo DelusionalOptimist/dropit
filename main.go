@@ -1,73 +1,125 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
-	"log"
-	"net"
+	"net/netip"
 	"os"
-	"strings"
+	"os/signal"
+	"syscall"
 	"time"
 
-	"github.com/cilium/ebpf"
-	"github.com/cilium/ebpf/link"
+	"github.com/DelusionalOptimist/dropit/pkg/types"
+	bpf "github.com/aquasecurity/libbpfgo"
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		log.Fatalf("Please specify a network interface")
-	}
-
-	// Look up the network interface by name.
-	ifaceName := os.Args[1]
-	iface, err := net.InterfaceByName(ifaceName)
+	bpfModule, err := bpf.NewModuleFromFile("daemon.o")
 	if err != nil {
-		log.Fatalf("lookup network iface %q: %s", ifaceName, err)
+		fmt.Println(err)
+		os.Exit(1)
 	}
 
-	// Load pre-compiled programs into the kernel.
-	objs := bpfObjects{}
-	if err := loadBpfObjects(&objs, nil); err != nil {
-		log.Fatalf("loading objects: %s", err)
-	}
-	defer objs.Close()
+	defer bpfModule.Close()
 
-	// Attach the program.
-	l, err := link.AttachXDP(link.XDPOptions{
-		Program:   objs.XdpProgFunc,
-		Interface: iface.Index,
-	})
+	err = bpfModule.BPFLoadObject()
 	if err != nil {
-		log.Fatalf("could not attach XDP program: %s", err)
+		fmt.Println(err)
+		os.Exit(1)
 	}
-	defer l.Close()
 
-	log.Printf("Attached XDP program to iface %q (index %d)", iface.Name, iface.Index)
-	log.Printf("Press Ctrl-C to exit and remove the program")
+	xdpProg, err := bpfModule.GetProgram("intercept_packets")
+	if xdpProg == nil {
+		fmt.Println(fmt.Errorf("Failed to get xdp program %s", err))
+	}
 
-	// Print the contents of the BPF hash map (source IP address -> packet count).
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		s, err := formatMapContents(objs.XdpStatsMap)
-		if err != nil {
-			log.Printf("Error reading map: %s", err)
-			continue
+	// TODO: config
+	interfaceName := os.Getenv("INTERFACE_NAME")
+	if interfaceName == "" {
+		interfaceName = "eth0"
+	}
+
+	_, err = xdpProg.AttachXDP(interfaceName)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+
+	eventsChan := make(chan []byte)
+	ringbuf, err := bpfModule.InitRingBuf("events", eventsChan)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+
+	defer ringbuf.Stop()
+	defer ringbuf.Close()
+
+	ringbuf.Poll(300)
+
+	// listen for sigkill,term
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGKILL, syscall.SIGINT)
+
+	packetIdx := 0
+	fmt.Printf(
+		"|%-5s|%-19s|%-15s|%-8s|%-15s|%-8s|%-5s|%-10s|\n",
+		"No.", "Time", "Src IP", "Src Port", "Dest IP", "Dst Port", "Proto", "Size",
+	)
+
+	for {
+		select {
+		case eventBytes := <- eventsChan:
+			packetIdx++
+			pk := parseByteData(eventBytes)
+
+			fmt.Printf(
+				"|%-5d|%-19s|%-15s|%-8d|%-15s|%-8d|%-5s|%-10d|\n",
+				packetIdx,
+				time.Now().Format(time.DateTime),
+				pk.SourceIP,
+				pk.SourcePort,
+				pk.DestIP,
+				pk.DestPort,
+				pk.Protocol,
+				pk.Size,
+			)
+
+		case sig := <- sigChan:
+			fmt.Printf("Received %s...\nCleaning up...\n", sig.String())
+			fmt.Println("Exiting...")
+			return
 		}
-		log.Printf("Map contents:\n%s", s)
 	}
 }
 
-func formatMapContents(m *ebpf.Map) (string, error) {
-	var (
-		sb  strings.Builder
-		key []byte
-		val uint32
-	)
-	iter := m.Iterate()
-	for iter.Next(&key, &val) {
-		sourceIP := net.IP(key) // IPv4 source address in network byte order.
-		packetCount := val
-		sb.WriteString(fmt.Sprintf("\t%s => %d\n", sourceIP, packetCount))
+func parseByteData(data []byte) types.Packet {
+	if len(data) == 20 {
+
+		// Since XDP hook picks up data from network directly and we don't convert
+		// in C code, the data here is in network byte order (big endian)
+		pk := types.Packet{
+			Size: binary.BigEndian.Uint32(data[8:12])/1024,
+			SourcePort: binary.BigEndian.Uint16(data[12:14]),
+			DestPort: binary.BigEndian.Uint16(data[14:16]),
+			Protocol: types.GetProtoName(data[16]),
+
+			// Using gopacket
+			//Protocol: layers.IPProtocol(data[16]).String(),
+		}
+
+		srcIP, ok := netip.AddrFromSlice(data[0:4])
+		if ok {
+			pk.SourceIP = srcIP.String()
+		}
+
+		dstIP, ok := netip.AddrFromSlice(data[4:8])
+		if ok {
+			pk.DestIP = dstIP.String()
+		}
+
+		return pk
 	}
-	return sb.String(), iter.Err()
+
+	return types.Packet{}
 }
