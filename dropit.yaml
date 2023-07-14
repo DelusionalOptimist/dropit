@@ -1,0 +1,30 @@
+rules:
+  # each rule consists of an id, sourceIP, destinationPort,
+  # sourcePort and protocol
+  # '*' implies all
+
+  # id - string
+  # required: true
+  - id: "rule1" #string
+
+    # single IP
+    # required: true
+    # (TODO list of IPs, CIDR, domain names?)
+    sourceIP: 172.18.0.2
+
+    # port number or *
+    # required: true
+    # (TODO list of ports, range)
+    destinationPort: '*'
+
+    # port number or *
+    # required: true
+    # (TODO list of ports, range)
+    #sourcePort:
+
+    # protocol - TCP, UDP or *
+    # required: true
+    protocol: "*"
+
+    # TODO action - allow/block
+    # TODO direction - ingress/egress

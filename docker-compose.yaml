@@ -1,0 +1,20 @@
+version: '3.8'
+services:
+  dropit:
+    container_name: dropit
+    privileged: true
+    build:
+      context: .
+    image: delusionaloptimist/dropit:latest
+    command:
+      - --interface=eth0
+      - --config=/dropit/dropit.yaml
+    volumes:
+      - "${PWD}/dropit.yaml:/dropit/dropit.yaml"
+    networks:
+      - dropit-testnet
+    ports:
+      - "8080:8080"
+
+networks:
+  dropit-testnet: {}

@@ -1,21 +1,22 @@
 FROM golang:1.20 as build
 
-WORKDIR /build
-
 RUN apt update -y; apt install -y build-essential clang libbpf-dev
 
+WORKDIR /build
 ADD . .
-
 RUN make build
 
+# the final image
 FROM debian:stable
 
-RUN apt -y update; apt -y install apache2
-WORKDIR /app
+#RUN apt update -y; apt install -y apache2
 
-COPY entrypoint.sh /app/entrypoint.sh
-COPY vmlinux.h /app/vmlinux.h
-COPY --from=build /build/daemon.o /app/daemon.o
-COPY --from=build /build/dropit /app/dropit
+WORKDIR /dropit
+COPY scripts/entrypoint.sh /dropit/entrypoint.sh
+COPY vmlinux.h /dropit/vmlinux.h
+COPY --from=build /build/daemon.o /dropit/daemon.o
+COPY --from=build /build/dropit /dropit/dropit
 
-CMD ["bash", "/app/entrypoint.sh"]
+COPY --from=delusionaloptimist/goserver /goserver /goserver
+
+ENTRYPOINT ["/dropit/entrypoint.sh"]

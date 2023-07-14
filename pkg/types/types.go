@@ -1,10 +1,11 @@
 package types
 
 type Packet struct {
-	SourceIP string
-  SourcePort uint16
-	DestIP string
-  DestPort uint16
-	Protocol string
-	Size uint32
+	SourceIP   string
+	DestIP     string
+	Size       uint32
+	SourcePort uint16
+	DestPort   uint16
+	Protocol   string
+	Status     string
 }
