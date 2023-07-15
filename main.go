@@ -3,10 +3,12 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
+	"log"
 	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"reflect"
 	"syscall"
 	"time"
 	"unsafe"
@@ -14,37 +16,84 @@ import (
 	"github.com/DelusionalOptimist/dropit/pkg/config"
 	"github.com/DelusionalOptimist/dropit/pkg/types"
 	bpf "github.com/aquasecurity/libbpfgo"
+	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 )
 
 var (
+	// userspace filter map
+	FilterRuleBytesMap = make(map[string]types.FilterRuleBytes, 1)
+
+	// reference to kernel space BPF map for filters
 	FilterMap *bpf.BPFMap
 )
 
 func main() {
-	viper.AutomaticEnv()
-
 	InterfaceName := pflag.String("interface", "eth0", "Network interface to monitor")
 	ConfigPath := pflag.String("config", filepath.Join("opt", "dropit", "dropit.yaml"), "Absolute path to the config file for dropit")
 
 	pflag.Parse()
 
 	if ConfigPath != nil && *ConfigPath != "" {
-		fmt.Printf("Filter file path: %s...\n", *ConfigPath)
+		log.Printf("Filter file path: %s...\n", *ConfigPath)
 
-		err := config.InitConfig(*ConfigPath)
+		viper.SetConfigFile(*ConfigPath)
+
+		var err error
+		FilterRuleBytesMap, err = config.GetConfig()
 		if err != nil {
-			fmt.Println(err)
+			log.Println(err)
 			os.Exit(1)
 		}
+
+		viper.OnConfigChange(func(in fsnotify.Event) {
+			if in.Op == fsnotify.Write {
+
+				frMapNew, err := config.GetConfig()
+				if err != nil {
+					log.Printf("Error while getting new config: %s\n", err)
+					log.Println("Filter rules won't be updated.")
+					return
+				}
+
+				if reflect.DeepEqual(FilterRuleBytesMap, frMapNew) {
+					// no actual changes, just an event
+					log.Println("Filter rules updated. No changes to do...")
+					return
+				}
+
+				log.Printf("Filter file updated. Getting new filter rules...\n")
+
+				for newRule, newVal := range frMapNew {
+					if _, ok := FilterRuleBytesMap[newRule]; ok {
+						// if rule already exists, compare it
+						UpdateBPFMap("MODIFY", newRule, newVal)
+					} else {
+						// new rule added, add it
+						UpdateBPFMap("ADD", newRule, newVal)
+					}
+				}
+
+				// check if any rule was deleted
+				for curRule := range FilterRuleBytesMap {
+					if _, ok := frMapNew[curRule]; !ok {
+						UpdateBPFMap("DELETE", curRule, types.FilterRuleBytes{})
+					}
+				}
+
+			}
+		})
+
+		viper.WatchConfig()
+
 	} else {
-		fmt.Println("No filters specified...")
+		log.Println("No filters specified...")
 	}
 
 	bpfModule, err := bpf.NewModuleFromFile("daemon.o")
 	if err != nil {
-		fmt.Println(err)
+		log.Println(err)
 		os.Exit(1)
 	}
 
@@ -52,39 +101,39 @@ func main() {
 
 	err = bpfModule.BPFLoadObject()
 	if err != nil {
-		fmt.Println(err)
+		log.Println(err)
 		os.Exit(1)
 	}
 
 	xdpProg, err := bpfModule.GetProgram("intercept_packets")
 	if xdpProg == nil {
-		fmt.Println(fmt.Errorf("Failed to get xdp program %s", err))
+		log.Println(fmt.Errorf("Failed to get xdp program %s", err))
 	}
 
 	_, err = xdpProg.AttachXDP(*InterfaceName)
 	if err != nil {
-		fmt.Println(err)
+		log.Println(err)
 		os.Exit(1)
 	}
 
 	FilterMap, err = bpfModule.GetMap("filter_rules")
 	if err != nil {
-		fmt.Println(err)
+		log.Println(err)
 		os.Exit(1)
 	} else if FilterMap.Name() != "filter_rules" {
-		fmt.Println("Wrong map...")
+		log.Println("Wrong map...")
 		os.Exit(1)
 	} else if FilterMap.Type() != bpf.MapTypeHash {
-		fmt.Println("Wrong map type...")
+		log.Println("Wrong map type...")
 		os.Exit(1)
 	}
 
-	updateBPFMap()
+	initBPFMap()
 
 	eventsChan := make(chan []byte)
 	ringbuf, err := bpfModule.InitRingBuf("events", eventsChan)
 	if err != nil {
-		fmt.Println(err)
+		log.Println(err)
 		os.Exit(1)
 	}
 
@@ -98,7 +147,7 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGKILL, syscall.SIGINT)
 
 	packetIdx := 0
-	fmt.Printf(
+	log.Printf(
 		"|%-5s|%-19s|%-15s|%-8s|%-15s|%-8s|%-5s|%-10s|%-8s|\n",
 		"No.", "Time", "Src IP", "Src Port", "Dest IP", "Dst Port", "Proto", "Size", "Status",
 	)
@@ -109,7 +158,7 @@ func main() {
 			packetIdx++
 			pk := parseByteData(eventBytes)
 
-			fmt.Printf(
+			log.Printf(
 				"|%-5d|%-19s|%-15s|%-8d|%-15s|%-8d|%-5s|%-10d|%-8s|\n",
 				packetIdx,
 				time.Now().Format(time.DateTime),
@@ -123,26 +172,77 @@ func main() {
 			)
 
 		case sig := <-sigChan:
-			fmt.Printf("Received %s...\nCleaning up...\n", sig.String())
-			fmt.Println("Exiting...")
+			log.Printf("Received %s...\nCleaning up...\n", sig.String())
+			log.Println("Exiting...")
 			return
 		}
 	}
 }
 
 // TODO: figure out why byte order is so f'ed up everywhere
-func updateBPFMap() {
-	for key, value := range config.FilterRuleBytesMap {
+func UpdateBPFMap(action string, ruleName string, ruleVal types.FilterRuleBytes) error {
+	keyBin := binary.BigEndian.Uint32([]byte(ruleName))
+	keyUnsafe := unsafe.Pointer(&keyBin)
+
+	switch action{
+	case "ADD":
+		// add a new map
+		log.Printf("Adding map with ID %s: %v\n", ruleName, ruleVal)
+
+		valueUnsafe := unsafe.Pointer(&ruleVal)
+
+		err := FilterMap.Update(keyUnsafe, valueUnsafe)
+		if err != nil {
+			return fmt.Errorf("Failed to update bpf map with id: %s err: %s", ruleName, err)
+		}
+
+		FilterRuleBytesMap[ruleName] = ruleVal
+
+	case "MODIFY":
+		// no changes
+		if reflect.DeepEqual(FilterRuleBytesMap[ruleName], ruleVal) {
+			return nil
+		}
+
+		// update
+		log.Printf("Updating map with ID %s: %v\n", ruleName, ruleVal)
+
+		valueUnsafe := unsafe.Pointer(&ruleVal)
+
+		err := FilterMap.Update(keyUnsafe, valueUnsafe)
+		if err != nil {
+			return fmt.Errorf("Failed to update bpf map with id: %s err: %s", ruleName, err)
+		}
+
+		FilterRuleBytesMap[ruleName] = ruleVal
+
+	case "DELETE":
+		// delete
+		log.Printf("Deleting map with ID %s\n", ruleName)
+
+		err := FilterMap.DeleteKey(keyUnsafe)
+		if err != nil {
+			return fmt.Errorf("Failed to delete bpf map with id: %s err: %s", ruleName, err)
+		}
+
+		delete(FilterRuleBytesMap, ruleName)
+	}
+
+	return nil
+}
+
+func initBPFMap() {
+	for key, value := range FilterRuleBytesMap {
 		keyBin := binary.BigEndian.Uint32([]byte(key))
 
-		fmt.Printf("Adding map with ID %s: %v\n", key, value)
+		log.Printf("Adding map with ID %s: %v\n", key, value)
 
 		keyUnsafe := unsafe.Pointer(&keyBin)
 		valueUnsafe := unsafe.Pointer(&value)
 
 		err := FilterMap.Update(keyUnsafe, valueUnsafe)
 		if err != nil {
-			fmt.Printf("Failed to update bpf map with id: %s err: %s", key, err)
+			log.Printf("Failed to update bpf map with id: %s err: %s", key, err)
 		}
 	}
 }

@@ -10,6 +10,7 @@ RUN make build
 FROM debian:stable
 
 #RUN apt update -y; apt install -y apache2
+RUN apt update -y; apt install -y inotify-tools
 
 WORKDIR /dropit
 COPY scripts/entrypoint.sh /dropit/entrypoint.sh

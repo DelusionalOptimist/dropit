@@ -13,7 +13,6 @@ import (
 
 var (
 	Cfg                Config
-	FilterRuleBytesMap = make(map[string]FilterRuleBytes, 1)
 )
 
 type Config struct {
@@ -26,32 +25,24 @@ type Config struct {
 	} `yaml:"rules"`
 }
 
-type FilterRuleBytes struct {
-	SourceIP        uint32
-	SourcePort      uint16
-	DestinationPort uint16
-	Protocol        uint8
-}
-
-func InitConfig(configPath string) error {
-	if err := readConfig(configPath); err != nil {
-		return err
+func GetConfig() (map[string]types.FilterRuleBytes, error) {
+	if err := readConfig(); err != nil {
+		return nil, err
 	}
 
 	if err := validateConfig(); err != nil {
-		return err
+		return nil, err
 	}
 
-	if err := parseConfig(); err != nil {
-		return err
+	fr, err := parseConfig()
+	if err != nil {
+		return nil, err
 	}
 
-	return nil
+	return fr, nil
 }
 
-func readConfig(configPath string) (errorStr error) {
-	viper.SetConfigFile(configPath)
-
+func readConfig() (errorStr error) {
 	err := viper.ReadInConfig()
 	if err == nil {
 		return nil
@@ -78,13 +69,20 @@ func validateConfig() error {
 	return nil
 }
 
-func parseConfig() error {
+func parseConfig() (map[string]types.FilterRuleBytes, error) {
+	fr := make(map[string]types.FilterRuleBytes)
 	for _, rule := range Cfg.Rules {
-		ip, err := netip.ParseAddr(rule.SourceIP)
-		if err != nil {
-			return fmt.Errorf("Rule ID: %s. Failed to read sourceIP. %s", rule.ID, err)
+		var err error
+		var srcIP uint32
+		if rule.SourceIP == "*" {
+			srcIP = 0
+		} else {
+			ip, err := netip.ParseAddr(rule.SourceIP)
+			if err != nil {
+				return fr, fmt.Errorf("Rule ID: %s. Failed to read sourceIP. %s", rule.ID, err)
+			}
+			srcIP = binary.LittleEndian.Uint32(ip.AsSlice())
 		}
-		srcIP := binary.LittleEndian.Uint32(ip.AsSlice())
 
 		var destPort uint64
 		if rule.DestinationPort == "*" {
@@ -92,34 +90,34 @@ func parseConfig() error {
 		} else {
 			destPort, err = strconv.ParseUint(rule.DestinationPort, 10, 16)
 			if err != nil {
-				return fmt.Errorf("Rule ID: %s. Failed to read destPort. %s", rule.ID, err)
+				return fr, fmt.Errorf("Rule ID: %s. Failed to read destPort. %s", rule.ID, err)
 			}
 		}
 
-		//var srcPort uint64
-		//if rule.SourcePort == "*" {
-		//	srcPort = 0
-		//} else {
-		//	srcPort, err := strconv.ParseUint(rule.SourcePort, 10, 16)
-		//	if err != nil {
-		//		fmt.Println("Failed to read sourcePort from rule ID:", rule.ID, err)
-		//	}
-		//}
+		var srcPort uint64
+		if rule.SourcePort == "*" {
+			srcPort = 0
+		} else {
+			srcPort, err = strconv.ParseUint(rule.SourcePort, 10, 16)
+			if err != nil {
+				return fr, fmt.Errorf("Rule ID: %s. Failed to read sourcePort. %s", rule.ID, err)
+			}
+		}
 
 		protocol := types.GetProtoNumber(rule.Protocol)
 		if protocol == syscall.IPPROTO_NONE {
-			return fmt.Errorf("Rule: %s. Bad protocol specified: %s. Possible values: TCP, UDP or *", rule.ID, rule.Protocol)
+			return fr, fmt.Errorf("Rule: %s. Bad protocol specified: %s. Possible values: TCP, UDP or *", rule.ID, rule.Protocol)
 		}
 
-		byteRule := FilterRuleBytes{
+		byteRule := types.FilterRuleBytes{
 			SourceIP: srcIP,
-			//SourcePort: uint16(srcPort << 8),
+			SourcePort: uint16(srcPort << 8),
 			DestinationPort: uint16(destPort << 8),
 			Protocol:        protocol,
 		}
 
-		FilterRuleBytesMap[rule.ID] = byteRule
+		fr[rule.ID] = byteRule
 	}
 
-	return nil
+	return fr, nil
 }

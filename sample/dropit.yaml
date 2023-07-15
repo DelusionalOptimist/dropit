@@ -7,24 +7,24 @@ rules:
   # required: true
   - id: "rule1" #string
 
-    # single IP
+    # single IP, *
     # required: true
-    # (TODO list of IPs, CIDR, domain names?)
-    sourceIP: 172.18.0.2
+    sourceIP: 172.18.0.6
 
     # port number or *
     # required: true
-    # (TODO list of ports, range)
     destinationPort: '*'
 
     # port number or *
     # required: true
-    # (TODO list of ports, range)
-    #sourcePort:
+    sourcePort: '*'
 
     # protocol - TCP, UDP or *
     # required: true
-    protocol: "*"
+    protocol: '*'
 
-    # TODO action - allow/block
-    # TODO direction - ingress/egress
+    # TODOS:
+    # list of IPs, CIDR, domain names?)
+    # list, range of ports
+    # actions - allow/block
+    # direction - ingress/egress (need TC hooks)

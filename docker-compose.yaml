@@ -8,9 +8,9 @@ services:
     image: delusionaloptimist/dropit:latest
     command:
       - --interface=eth0
-      - --config=/dropit/dropit.yaml
+      - --config=/dropit/sample/dropit.yaml
     volumes:
-      - "${PWD}/dropit.yaml:/dropit/dropit.yaml"
+      - "${PWD}/sample:/dropit/sample"
     networks:
       - dropit-testnet
     ports:

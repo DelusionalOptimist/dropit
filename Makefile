@@ -3,7 +3,7 @@ docker-run: docker-clean
 	docker compose up --build --remove-orphans && docker compose rm -f
 
 docker-run-host: docker-clean docker-build
-	docker run -it --rm -v "$(PWD)"/dropit.yaml:/dropit/dropit.yaml:ro --privileged=true --network=host --name=dropit delusionaloptimist/dropit:latest --interface=wlan0 --config=/dropit/dropit.yaml
+	docker run -it --rm -v "$(PWD)"/sample:/dropit/sample/:ro --privileged=true --network=host --name=dropit delusionaloptimist/dropit:latest --interface=wlan0 --config=/dropit/sample/dropit.yaml
 
 docker-build:
 	docker build -t delusionaloptimist/dropit:latest .
