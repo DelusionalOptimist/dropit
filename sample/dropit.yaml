@@ -9,7 +9,7 @@ rules:
 
     # single IP, *
     # required: true
-    sourceIP: 172.18.0.6
+    sourceIP: '*'
 
     # port number or *
     # required: true

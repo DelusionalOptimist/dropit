@@ -12,7 +12,7 @@ func GetProtoName(proto uint8) string {
 	case syscall.IPPROTO_UDP:
 		return "UDP"
 	}
-	return ""
+	return "-"
 }
 
 func GetProtoNumber(proto string) (protoInt uint8) {

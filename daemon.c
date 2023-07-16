@@ -62,6 +62,9 @@ static u64 filter_packet(struct bpf_map *map, u32 *key,
                          struct filter_rule *value, struct lookup_ctx *ctx) {
   struct packet *pk = ctx->pk;
 
+  bpf_printk("Rule %u %u %u %u %u. Packet %u %u %u %u", key, value->source_ip,
+                   value->source_port, value->dest_port, value->protocol, pk->source_ip,
+                   pk->source_port, pk->dest_port, pk->protocol);
   if (value->source_ip == 0) {
     // drop from all IPs
     if (value->source_port == 0) {
@@ -87,7 +90,7 @@ static u64 filter_packet(struct bpf_map *map, u32 *key,
           ctx->fr = value;
           return 1;
         } else if (value->protocol == pk->protocol) {
-          // drop specified protocol all ports on specified port
+          // drop specified protocol from all ports on specified port
           ctx->output = XDP_DROP;
           ctx->fr = value;
           return 1;
@@ -148,7 +151,7 @@ static u64 filter_packet(struct bpf_map *map, u32 *key,
           ctx->fr = value;
           return 1;
         } else if (value->protocol == pk->protocol) {
-          // drop specified protocol all ports on specified port
+          // drop specified protocol from all ports on specified port
           ctx->output = XDP_DROP;
           ctx->fr = value;
           return 1;
@@ -245,9 +248,11 @@ int intercept_packets(struct xdp_md *ctx) {
       if (data.output == XDP_DROP) {
         pk.is_dropped = 1;
         struct filter_rule *fr = data.fr;
+				/*
         bpf_printk("Rule %u %u %u %u. Packet %u %u %u %u", fr->source_ip,
                    fr->source_port, fr->dest_port, fr->protocol, pk.source_ip,
                    pk.source_port, pk.dest_port, pk.protocol);
+				*/
         push_log(&pk);
         return XDP_DROP;
       }

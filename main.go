@@ -23,10 +23,14 @@ import (
 
 var (
 	// userspace filter map
-	FilterRuleBytesMap = make(map[string]types.FilterRuleBytes, 1)
+	FilterRuleBytesMap map[string]types.FilterRuleBytes
 
 	// reference to kernel space BPF map for filters
 	FilterMap *bpf.BPFMap
+
+	// Mapping rule ID's string keys to BPF Map's uint32 keys
+	// I don't want to use string as BPF map key, thus this workaround
+	RuleBPFKeyMap map[string]uint32
 )
 
 func main() {
@@ -35,58 +39,69 @@ func main() {
 
 	pflag.Parse()
 
+	FilterRuleBytesMap = make(map[string]types.FilterRuleBytes)
+	RuleBPFKeyMap = make(map[string]uint32)
+
 	if ConfigPath != nil && *ConfigPath != "" {
-		log.Printf("Filter file path: %s...\n", *ConfigPath)
-
-		viper.SetConfigFile(*ConfigPath)
-
-		var err error
-		FilterRuleBytesMap, err = config.GetConfig()
+		_, err := os.Stat(*ConfigPath)
 		if err != nil {
-			log.Println(err)
-			os.Exit(1)
-		}
-
-		viper.OnConfigChange(func(in fsnotify.Event) {
-			if in.Op == fsnotify.Write {
-
-				frMapNew, err := config.GetConfig()
-				if err != nil {
-					log.Printf("Error while getting new config: %s\n", err)
-					log.Println("Filter rules won't be updated.")
-					return
-				}
-
-				if reflect.DeepEqual(FilterRuleBytesMap, frMapNew) {
-					// no actual changes, just an event
-					log.Println("Filter rules updated. No changes to do...")
-					return
-				}
-
-				log.Printf("Filter file updated. Getting new filter rules...\n")
-
-				for newRule, newVal := range frMapNew {
-					if _, ok := FilterRuleBytesMap[newRule]; ok {
-						// if rule already exists, compare it
-						UpdateBPFMap("MODIFY", newRule, newVal)
-					} else {
-						// new rule added, add it
-						UpdateBPFMap("ADD", newRule, newVal)
-					}
-				}
-
-				// check if any rule was deleted
-				for curRule := range FilterRuleBytesMap {
-					if _, ok := frMapNew[curRule]; !ok {
-						UpdateBPFMap("DELETE", curRule, types.FilterRuleBytes{})
-					}
-				}
-
+			if err == os.ErrNotExist {
+				log.Printf("Filter file doesn't exist. Running in monitor only mode.\n")
+			} else {
+				log.Printf("Error while getting filter file: %s", err)
 			}
-		})
+		} else {
 
-		viper.WatchConfig()
+			log.Printf("Filter file path: %s...\n", *ConfigPath)
 
+			viper.SetConfigFile(*ConfigPath)
+
+			FilterRuleBytesMap, err = config.GetConfig()
+			if err != nil {
+				log.Println(err)
+				os.Exit(1)
+			}
+
+			viper.OnConfigChange(func(in fsnotify.Event) {
+				if in.Op == fsnotify.Write {
+
+					frMapNew, err := config.GetConfig()
+					if err != nil {
+						log.Printf("Error while getting new config: %s\n", err)
+						log.Println("Filter rules won't be updated.")
+						return
+					}
+
+					if reflect.DeepEqual(FilterRuleBytesMap, frMapNew) {
+						// no actual changes, just an event
+						log.Println("Filter file updated. No changes to do...")
+						return
+					}
+
+					log.Printf("Filter file updated. Getting new filter rules...\n")
+
+					for newRule, newVal := range frMapNew {
+						if _, ok := FilterRuleBytesMap[newRule]; ok {
+							// if rule already exists, compare it with current rule
+							UpdateBPFMap("MODIFY", newRule, newVal)
+						} else {
+							// new rule added, add it to the map
+							UpdateBPFMap("ADD", newRule, newVal)
+						}
+					}
+
+					// check if any rule was deleted
+					for curRule := range FilterRuleBytesMap {
+						if _, ok := frMapNew[curRule]; !ok {
+							UpdateBPFMap("DELETE", curRule, types.FilterRuleBytes{})
+						}
+					}
+
+				}
+			})
+
+			viper.WatchConfig()
+		}
 	} else {
 		log.Println("No filters specified...")
 	}
@@ -181,10 +196,17 @@ func main() {
 
 // TODO: figure out why byte order is so f'ed up everywhere
 func UpdateBPFMap(action string, ruleName string, ruleVal types.FilterRuleBytes) error {
-	keyBin := binary.BigEndian.Uint32([]byte(ruleName))
-	keyUnsafe := unsafe.Pointer(&keyBin)
+	var intKey uint32
+	var ok bool
 
-	switch action{
+	// use value if int key exists, else we create one
+	if intKey, ok = RuleBPFKeyMap[ruleName]; !ok {
+		intKey = uint32(len(RuleBPFKeyMap) + 1)
+	}
+
+	keyUnsafe := unsafe.Pointer(&intKey)
+
+	switch action {
 	case "ADD":
 		// add a new map
 		log.Printf("Adding map with ID %s: %v\n", ruleName, ruleVal)
@@ -197,6 +219,7 @@ func UpdateBPFMap(action string, ruleName string, ruleVal types.FilterRuleBytes)
 		}
 
 		FilterRuleBytesMap[ruleName] = ruleVal
+		RuleBPFKeyMap[ruleName] = intKey
 
 	case "MODIFY":
 		// no changes
@@ -226,6 +249,7 @@ func UpdateBPFMap(action string, ruleName string, ruleVal types.FilterRuleBytes)
 		}
 
 		delete(FilterRuleBytesMap, ruleName)
+		delete(RuleBPFKeyMap, ruleName)
 	}
 
 	return nil
@@ -233,17 +257,19 @@ func UpdateBPFMap(action string, ruleName string, ruleVal types.FilterRuleBytes)
 
 func initBPFMap() {
 	for key, value := range FilterRuleBytesMap {
-		keyBin := binary.BigEndian.Uint32([]byte(key))
+		intKey := uint32(len(RuleBPFKeyMap) + 1)
 
 		log.Printf("Adding map with ID %s: %v\n", key, value)
 
-		keyUnsafe := unsafe.Pointer(&keyBin)
+		keyUnsafe := unsafe.Pointer(&intKey)
 		valueUnsafe := unsafe.Pointer(&value)
 
 		err := FilterMap.Update(keyUnsafe, valueUnsafe)
 		if err != nil {
 			log.Printf("Failed to update bpf map with id: %s err: %s", key, err)
 		}
+
+		RuleBPFKeyMap[key] = intKey
 	}
 }
 

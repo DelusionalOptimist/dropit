@@ -11,10 +11,6 @@ import (
 	"github.com/spf13/viper"
 )
 
-var (
-	Cfg                Config
-)
-
 type Config struct {
 	Rules []struct {
 		ID              string `yaml:"id"`
@@ -26,15 +22,16 @@ type Config struct {
 }
 
 func GetConfig() (map[string]types.FilterRuleBytes, error) {
+	cfg := &Config{}
 	if err := readConfig(); err != nil {
 		return nil, err
 	}
 
-	if err := validateConfig(); err != nil {
+	if err := cfg.validateConfig(); err != nil {
 		return nil, err
 	}
 
-	fr, err := parseConfig()
+	fr, err := cfg.parseConfig()
 	if err != nil {
 		return nil, err
 	}
@@ -48,20 +45,21 @@ func readConfig() (errorStr error) {
 		return nil
 	}
 
+	// viper issue: ConfigFileNotFoundError doesn't work for non existent directories?
 	if _, ok := err.(viper.ConfigFileNotFoundError); ok {
 		errorStr = fmt.Errorf("Filter file not found: %s", err)
 	} else if _, ok := err.(viper.ConfigParseError); ok {
 		errorStr = fmt.Errorf("Failed to parse config: %s", err)
 	} else {
-		errorStr = fmt.Errorf("Unknown err: %s", err)
+		errorStr = fmt.Errorf("Unknown error: %s", err)
 	}
 
 	return errorStr
 }
 
-func validateConfig() error {
+func (cfg *Config) validateConfig() error {
 	viper.SetConfigType("yaml")
-	err := viper.Unmarshal(&Cfg)
+	err := viper.Unmarshal(cfg)
 	if err != nil {
 		return err
 	}
@@ -69,9 +67,9 @@ func validateConfig() error {
 	return nil
 }
 
-func parseConfig() (map[string]types.FilterRuleBytes, error) {
+func (cfg *Config) parseConfig() (map[string]types.FilterRuleBytes, error) {
 	fr := make(map[string]types.FilterRuleBytes)
-	for _, rule := range Cfg.Rules {
+	for _, rule := range cfg.Rules {
 		var err error
 		var srcIP uint32
 		if rule.SourceIP == "*" {
