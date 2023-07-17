@@ -1,6 +1,6 @@
 FROM golang:1.20 as build
 
-RUN apt update -y; apt install -y build-essential clang libbpf-dev
+RUN apt update -y; apt install -y build-essential clang libbpf-dev bpftool
 
 WORKDIR /build
 ADD . .
@@ -14,8 +14,8 @@ RUN apt update -y; apt install -y inotify-tools
 
 WORKDIR /dropit
 COPY scripts/entrypoint.sh /dropit/entrypoint.sh
-COPY vmlinux.h /dropit/vmlinux.h
-COPY --from=build /build/daemon.o /dropit/daemon.o
+COPY --from=build /build/bpf/vmlinux.h /dropit/vmlinux.h
+COPY --from=build /build/bpf/daemon.o /dropit/daemon.o
 COPY --from=build /build/dropit /dropit/dropit
 
 COPY --from=delusionaloptimist/goserver /goserver /goserver

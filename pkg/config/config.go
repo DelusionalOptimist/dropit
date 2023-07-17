@@ -109,8 +109,8 @@ func (cfg *Config) parseConfig() (map[string]types.FilterRuleBytes, error) {
 
 		byteRule := types.FilterRuleBytes{
 			SourceIP: srcIP,
-			SourcePort: uint16(srcPort << 8),
-			DestinationPort: uint16(destPort << 8),
+			SourcePort: uint16(srcPort << 8 | srcPort >> 8),
+			DestinationPort: uint16(destPort << 8 | destPort >> 8),
 			Protocol:        protocol,
 		}
 
