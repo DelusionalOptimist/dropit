@@ -29,14 +29,14 @@ type Monitor struct {
 	// I don't want to use string as BPF map key, thus this workaround
 	RuleBPFKeyMap map[string]uint32
 
-	SigChan chan(os.Signal)
+	SigChan chan (os.Signal)
 }
 
 func NewMonitor() *Monitor {
 	mon := &Monitor{
 		FilterRuleBytesMap: make(map[string]types.FilterRuleBytes),
-		RuleBPFKeyMap: make(map[string]uint32),
-		SigChan: make(chan os.Signal, 1),
+		RuleBPFKeyMap:      make(map[string]uint32),
+		SigChan:            make(chan os.Signal, 1),
 	}
 
 	return mon
@@ -110,7 +110,6 @@ func (m *Monitor) loadConfig(cfgPath string) error {
 	return nil
 }
 
-
 func (m *Monitor) InitBPF(interfaceName string, bpfModule *bpf.Module) error {
 
 	err := bpfModule.BPFLoadObject()
@@ -143,7 +142,7 @@ func (m *Monitor) InitBPF(interfaceName string, bpfModule *bpf.Module) error {
 	return nil
 }
 
-func (m *Monitor) StartLogging(eventsChan chan([]byte), ringbuf *bpf.RingBuffer) error {
+func (m *Monitor) StartLogging(eventsChan chan ([]byte), ringbuf *bpf.RingBuffer) error {
 
 	packetIdx := 0
 	log.Printf(

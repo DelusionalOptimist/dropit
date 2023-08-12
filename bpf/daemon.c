@@ -70,130 +70,14 @@ static u64 filter_packet(struct bpf_map *map, u32 *key,
        pk->source_ip, pk->source_port, pk->dest_port, pk->protocol);
   */
 
-  if (value->source_ip == 0) {
-    // drop from all IPs
-    if (value->source_port == 0) {
-      // drop from all ports
-      if (value->dest_port == 0) {
-        // drop from all ports on all ports
-        if (value->protocol == 0) {
-          // drop all protocols from all ports on all ports
+  if( (value->source_ip == 0 || value->source_ip == pk->source_ip) && // match source IP 
+      (value->source_port == 0 || value->source_port == pk->source_port) && //match source port
+      (value->dest_port == 0 || value->dest_port == pk->dest_port) && // match destination port
+      (value->protocol == 0 || value->protocol == pk->protocol)){ // match protocol
           ctx->output = XDP_DROP;
           ctx->fr = value;
           return 1;
-        } else if (value->protocol == pk->protocol) {
-          // drop specified protocol from all ports on all ports
-          ctx->output = XDP_DROP;
-          ctx->fr = value;
-          return 1;
-        }
-      } else if (value->dest_port == pk->dest_port) {
-        // drop from all ports on specific port
-        if (value->protocol == 0) {
-          // drop all protocols from all ports on specified port
-          ctx->output = XDP_DROP;
-          ctx->fr = value;
-          return 1;
-        } else if (value->protocol == pk->protocol) {
-          // drop specified protocol from all ports on specified port
-          ctx->output = XDP_DROP;
-          ctx->fr = value;
-          return 1;
-        }
       }
-    } else if (value->source_port == pk->source_port) {
-      // drop from specified port
-      if (value->dest_port == 0) {
-        // drop from specified port on all ports
-        if (value->protocol == 0) {
-          // drop all protocols from specified port on all ports
-          ctx->output = XDP_DROP;
-          ctx->fr = value;
-          return 1;
-        } else if (value->protocol == pk->protocol) {
-          // drop specified protocol from specified port on all ports
-          ctx->output = XDP_DROP;
-          ctx->fr = value;
-          return 1;
-        }
-      } else if (value->dest_port == pk->dest_port) {
-        // drop on spercific port
-        if (value->protocol == 0) {
-          // drop all protocols from specified port on specified port
-          ctx->output = XDP_DROP;
-          ctx->fr = value;
-          return 1;
-        } else if (value->protocol == pk->protocol) {
-          // drop specified protocol form specified port on specified port
-          ctx->output = XDP_DROP;
-          ctx->fr = value;
-          return 1;
-        }
-      }
-    }
-  } else if (value->source_ip == pk->source_ip) {
-    // proceed if IP matched
-    if (value->source_port == 0) {
-      // drop from all ports
-      if (value->dest_port == 0) {
-        // drop from all ports on all ports
-        if (value->protocol == 0) {
-          // drop all protocols from all ports on all ports
-          ctx->output = XDP_DROP;
-          ctx->fr = value;
-          return 1;
-        } else if (value->protocol == pk->protocol) {
-          // drop specified protocol from all ports on all ports
-          ctx->output = XDP_DROP;
-          ctx->fr = value;
-          return 1;
-        }
-      } else if (value->dest_port == pk->dest_port) {
-        // drop from all ports on specific port
-        if (value->protocol == 0) {
-          // drop all protocols from all ports on specified port
-          ctx->output = XDP_DROP;
-          ctx->fr = value;
-          return 1;
-        } else if (value->protocol == pk->protocol) {
-          // drop specified protocol from all ports on specified port
-          ctx->output = XDP_DROP;
-          ctx->fr = value;
-          return 1;
-        }
-      }
-    } else if (value->source_port == pk->source_port) {
-      // drop from specified port
-      if (value->dest_port == 0) {
-        // drop from specified port on all ports
-        if (value->protocol == 0) {
-          // drop all protocols from specified port on all ports
-          ctx->output = XDP_DROP;
-          ctx->fr = value;
-          return 1;
-        } else if (value->protocol == pk->protocol) {
-          // drop specified protocol from specified port on all ports
-          ctx->output = XDP_DROP;
-          ctx->fr = value;
-          return 1;
-        }
-      } else if (value->dest_port == pk->dest_port) {
-        // drop on spercific port
-        if (value->protocol == 0) {
-          // drop all protocols from specified port on specified port
-          ctx->output = XDP_DROP;
-          ctx->fr = value;
-          return 1;
-        } else if (value->protocol == pk->protocol) {
-          // drop specified protocol form specified port on specified port
-          ctx->output = XDP_DROP;
-          ctx->fr = value;
-          return 1;
-        }
-      }
-    }
-  }
-
   return 0;
 }
 
