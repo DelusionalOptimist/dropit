@@ -3,6 +3,8 @@
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 
+#define MATCH_ALL 0
+
 extern int LINUX_KERNEL_VERSION __kconfig;
 
 struct packet {
@@ -70,10 +72,10 @@ static u64 filter_packet(struct bpf_map *map, u32 *key,
        pk->source_ip, pk->source_port, pk->dest_port, pk->protocol);
   */
 
-  if( (value->source_ip == 0 || value->source_ip == pk->source_ip) && // match source IP 
-      (value->source_port == 0 || value->source_port == pk->source_port) && //match source port
-      (value->dest_port == 0 || value->dest_port == pk->dest_port) && // match destination port
-      (value->protocol == 0 || value->protocol == pk->protocol)){ // match protocol
+  if( (value->source_ip == MATCH_ALL || value->source_ip == pk->source_ip) && // match source IP 
+      (value->source_port == MATCH_ALL || value->source_port == pk->source_port) && //match source port
+      (value->dest_port == MATCH_ALL || value->dest_port == pk->dest_port) && // match destination port
+      (value->protocol == MATCH_ALL || value->protocol == pk->protocol)){ // match protocol
           ctx->output = XDP_DROP;
           ctx->fr = value;
           return 1;
