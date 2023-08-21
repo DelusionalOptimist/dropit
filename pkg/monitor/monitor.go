@@ -81,6 +81,7 @@ func (m *Monitor) StartMonitor(interfaceName, cfgPath *string) error {
 	// listen for sigkill,term
 	signal.Notify(m.SigChan, syscall.SIGTERM, syscall.SIGKILL, syscall.SIGINT)
 
+	m.watchConfig()
 	m.StartLogging(eventsChan, ringbuf)
 
 	return nil
@@ -104,10 +105,12 @@ func (m *Monitor) loadConfig(cfgPath string) error {
 		return err
 	}
 
+	return nil
+}
+
+func (m *Monitor) watchConfig() {
 	viper.OnConfigChange(m.configChangeHandler)
 	viper.WatchConfig()
-
-	return nil
 }
 
 func (m *Monitor) InitBPF(interfaceName string, bpfModule *bpf.Module) error {
