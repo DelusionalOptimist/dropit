@@ -1,6 +1,6 @@
 rules:
   - id: "rule1"
     sourceIP: '*'
-    destinationPort: 8080
-    sourcePort: '*'
+    destinationPort: '*'
+    sourcePort: 8080
     protocol: '*'

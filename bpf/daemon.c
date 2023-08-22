@@ -1,9 +1,50 @@
 //+build ignore
 
-#include "vmlinux.h"
+#include <linux/types.h>
+#include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
+#include <linux/bpf.h>
+#include <linux/if_ether.h>
+#include <linux/ip.h>
+#include <linux/if_packet.h>
+#include <linux/pkt_cls.h>
+#include <linux/in.h>
+#include <linux/tcp.h>
+#include <asm/types.h>
+#include <linux/udp.h>
 
+typedef __u8 u8;
+
+typedef __s16 s16;
+
+typedef __u16 u16;
+
+typedef __s32 s32;
+
+typedef __u32 u32;
+
+typedef __s64 s64;
+
+typedef __u64 u64;
+
+typedef _Bool bool;
 #define MATCH_ALL 0
+
+// These macros represent the direction of traffic in a packet and in a filter rule(to check when to evaluate it).
+// Direction will be represented by u8
+#define Ingress 0
+#define Egress 1
+
+
+// These offsets are defined as per the __sk_buf struct of a particular version. Might break??
+#define OFFSET_PROTOCOL 4
+#define OFFSET_REMOTE_IP 19
+#define OFFSET_LOCAL_IP 20
+#define OFFSET_REMOTE_PORT 23
+#define OFFSET_LOCAL_PORT 24
+
+
+
 
 extern int LINUX_KERNEL_VERSION __kconfig;
 
@@ -15,6 +56,7 @@ struct packet {
   u16 dest_port;
   u8 protocol;
   bool is_dropped;
+  u8 direction;
 };
 
 struct filter_rule {
@@ -22,6 +64,7 @@ struct filter_rule {
   u16 source_port;
   u16 dest_port;
   u8 protocol;
+  u8 direction;
 };
 
 struct {
@@ -38,10 +81,12 @@ struct {
   __uint(max_entries, NO_OF_RULES); // 256 or 2^8 filter rules
 } filter_rules SEC(".maps");
 
+// The same lookup_ctx will be used for both XDP and tc related filtering. Different fields will be set depending on filter_rule->direction.
 struct lookup_ctx {
   struct packet *pk;
   struct filter_rule *fr;
-  int output;
+  int xdp_output;
+  int tc_output;
 };
 
 static void push_log(struct packet *pk) {
@@ -72,19 +117,94 @@ static u64 filter_packet(struct bpf_map *map, u32 *key,
        pk->source_ip, pk->source_port, pk->dest_port, pk->protocol);
   */
 
-  if( (value->source_ip == MATCH_ALL || value->source_ip == pk->source_ip) && // match source IP 
-      (value->source_port == MATCH_ALL || value->source_port == pk->source_port) && //match source port
-      (value->dest_port == MATCH_ALL || value->dest_port == pk->dest_port) && // match destination port
-      (value->protocol == MATCH_ALL || value->protocol == pk->protocol)){ // match protocol
-          ctx->output = XDP_DROP;
+  if((value->direction == Ingress) && // Use XDP filtering on Ingress 
+     (value->source_ip == MATCH_ALL || value->source_ip == pk->source_ip) && // match source IP 
+     (value->source_port == MATCH_ALL || value->source_port == pk->source_port) && //match source port
+     (value->dest_port == MATCH_ALL || value->dest_port == pk->dest_port) && // match destination port
+     (value->protocol == MATCH_ALL || value->protocol == pk->protocol)){ // match protocol
+          ctx->xdp_output = XDP_DROP;
           ctx->fr = value;
           return 1;
-      }
+  }
+
+  if((value->direction == Egress) && // Use tc filtering on Egress
+     (value->source_ip == MATCH_ALL || value->source_ip == pk->source_ip) && // match source IP 
+     (value->source_port == MATCH_ALL || value->source_port == pk->source_port) && //match source port
+     (value->dest_port == MATCH_ALL || value->dest_port == pk->dest_port) && // match destination port
+     (value->protocol == MATCH_ALL || value->protocol == pk->protocol)){ // match protocol
+          ctx->tc_output = TC_ACT_SHOT;
+          ctx->fr = value;
+          return 1;
+  }
   return 0;
 }
 
+
+SEC("tc")
+int intercept_packets_tc_egress(struct __sk_buff *skb){
+  //Parse skbuff to create the packet struct and pass that to filter_packets
+  struct packet pk;
+  pk.direction = Egress;
+
+
+
+  //create a copy of skbuff locally
+  // currently failing verification
+  // struct __sk_buff localskb;
+  // int status = bpf_skb_load_bytes(skb,0,&localskb,sizeof(struct __sk_buff));
+  // if (!status){
+  //     return TC_ACT_SHOT; //for testing
+      
+  // }
+
+  // pk.dest_ip = localskb.remote_ip4;
+  // pk.dest_port = localskb.remote_port;
+  // pk.source_ip = localskb.local_ip4;
+  // pk.source_port = localskb.local_port;
+  // pk.protocol = localskb.protocol;
+
+
+  //individually filling
+  // bpf_skb_load_bytes(skb,sizeof(__u32)*OFFSET_REMOTE_IP,&pk.dest_ip,sizeof(__u32));
+  // bpf_skb_load_bytes(skb,sizeof(__u32)*OFFSET_LOCAL_IP,&pk.source_ip,sizeof(__u32));
+  // bpf_skb_load_bytes(skb,sizeof(__u32)*OFFSET_LOCAL_PORT,&pk.source_port,sizeof(__u32));
+  // bpf_skb_load_bytes(skb,sizeof(__u32)*OFFSET_REMOTE_PORT,&pk.dest_port,sizeof(__u32));
+  // bpf_skb_load_bytes(skb,sizeof(__u32)*OFFSET_PROTOCOL,&pk.protocol,sizeof(__u32));
+
+  //Direct packet access
+  // pk.dest_ip = skb->remote_ip4;
+  // pk.dest_port = skb->remote_port;
+  // pk.source_ip = skb->local_ip4;
+  // pk.source_port = skb->local_port;
+  // pk.protocol = skb->protocol;
+
+
+  struct lookup_ctx data = {
+    .pk = &pk,
+    .tc_output = 0,
+  };
+  bpf_for_each_map_elem(&filter_rules, filter_packet, &data, 0);
+  
+  if(data.tc_output == TC_ACT_SHOT){
+        pk.is_dropped = 1;
+        struct filter_rule *fr = data.fr;
+        // network security event logs only work on kernel 5.16
+#if LINUX_KERNEL_VERSION >= KERNEL_VERSION(5, 16, 0)
+        bpf_printk("Rule: %u %u %u %u. Packet %u %u %u %u", fr->source_ip,
+                   fr->source_port, fr->dest_port, fr->protocol, pk.source_ip,
+                   pk.source_port, pk.dest_port, pk.protocol);
+#endif
+        push_log(&pk);
+        return TC_ACT_SHOT;
+
+  }
+  push_log(&pk);
+  return TC_ACT_OK;
+}
+
+
 SEC("xdp")
-int intercept_packets(struct xdp_md *ctx) {
+int intercept_packets_xdp_ingress(struct xdp_md *ctx) {
   // We mark the start and end of our ethernet frame
   void *ethernet_start = (void *)(long)ctx->data;
   void *ethernet_end = (void *)(long)ctx->data_end;
@@ -106,7 +226,7 @@ int intercept_packets(struct xdp_md *ctx) {
       pk.size = (ethernet_end - ethernet_start);
       pk.dest_port = pk.source_port = 0;
       pk.is_dropped = 0;
-
+      pk.direction = Ingress;
       // check the protocol and get port
       if (pk.protocol == IPPROTO_TCP) {
         struct tcphdr *tcp = (void *)ip_packet + sizeof(*ip_packet);
@@ -128,12 +248,12 @@ int intercept_packets(struct xdp_md *ctx) {
 
       struct lookup_ctx data = {
           .pk = &pk,
-          .output = 0,
+          .xdp_output = 0,
       };
 
       bpf_for_each_map_elem(&filter_rules, filter_packet, &data, 0);
 
-      if (data.output == XDP_DROP) {
+      if (data.xdp_output == XDP_DROP) {
         pk.is_dropped = 1;
         struct filter_rule *fr = data.fr;
         // network security event logs only work on kernel 5.16

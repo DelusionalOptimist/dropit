@@ -1,7 +1,7 @@
 FROM golang:1.20 as build
 
-RUN apt update -y; apt install -y build-essential clang libbpf-dev bpftool
-
+RUN apt update -y; apt install -y build-essential clang libbpf-dev bpftool linux-headers-generic
+RUN  ln -s /usr/include/x86_64-linux-gnu/asm /usr/include/asm
 WORKDIR /build
 ADD . .
 RUN make build
@@ -11,7 +11,6 @@ FROM debian:stable
 
 #RUN apt update -y; apt install -y apache2
 RUN apt update -y; apt install -y inotify-tools
-
 WORKDIR /dropit
 COPY scripts/entrypoint.sh /dropit/entrypoint.sh
 COPY --from=build /build/bpf/vmlinux.h /dropit/vmlinux.h
