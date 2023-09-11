@@ -1,6 +1,6 @@
 FROM golang:1.20 as build
 
-RUN apt update -y; apt install -y build-essential clang libbpf-dev bpftool linux-headers-generic
+RUN apt update -y; apt install -y build-essential clang libbpf-dev bpftool linux-headers-generic gcc-multilib
 RUN  ln -s /usr/include/x86_64-linux-gnu/asm /usr/include/asm
 WORKDIR /build
 ADD . .

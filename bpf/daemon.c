@@ -1,17 +1,25 @@
 //+build ignore
-
+#include <stddef.h>
 #include <linux/types.h>
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
 #include <linux/bpf.h>
 #include <linux/if_ether.h>
 #include <linux/ip.h>
+#include <linux/ipv6.h>
 #include <linux/if_packet.h>
 #include <linux/pkt_cls.h>
-#include <linux/in.h>
 #include <linux/tcp.h>
+#include <linux/filter.h>
 #include <asm/types.h>
 #include <linux/udp.h>
+#include <linux/random.h>
+#include <linux/net.h>
+/* #include <netinet/in.h> */
+
+typedef __kernel_size_t size_t;
+
+typedef __kernel_ssize_t ssize_t;
 
 typedef __u8 u8;
 
@@ -47,7 +55,12 @@ typedef _Bool bool;
 
 
 extern int LINUX_KERNEL_VERSION __kconfig;
-
+/* copy of 'struct ethhdr' without __packed */
+struct eth_hdr {
+	unsigned char   h_dest[ETH_ALEN];
+	unsigned char   h_source[ETH_ALEN];
+	unsigned short  h_proto;
+};
 struct packet {
   u32 source_ip;
   u32 dest_ip;
@@ -67,6 +80,37 @@ struct filter_rule {
   u8 direction;
 };
 
+enum {
+	IPPROTO_IP = 0,
+	IPPROTO_ICMP = 1,
+	IPPROTO_IGMP = 2,
+	IPPROTO_IPIP = 4,
+	IPPROTO_TCP = 6,
+	IPPROTO_EGP = 8,
+	IPPROTO_PUP = 12,
+	IPPROTO_UDP = 17,
+	IPPROTO_IDP = 22,
+	IPPROTO_TP = 29,
+	IPPROTO_DCCP = 33,
+	IPPROTO_IPV6 = 41,
+	IPPROTO_RSVP = 46,
+	IPPROTO_GRE = 47,
+	IPPROTO_ESP = 50,
+	IPPROTO_AH = 51,
+	IPPROTO_MTP = 92,
+	IPPROTO_BEETPH = 94,
+	IPPROTO_ENCAP = 98,
+	IPPROTO_PIM = 103,
+	IPPROTO_COMP = 108,
+	IPPROTO_L2TP = 115,
+	IPPROTO_SCTP = 132,
+	IPPROTO_UDPLITE = 136,
+	IPPROTO_MPLS = 137,
+	IPPROTO_ETHERNET = 143,
+	IPPROTO_RAW = 255,
+	IPPROTO_MPTCP = 262,
+	IPPROTO_MAX = 263,
+};
 struct {
   __uint(type, BPF_MAP_TYPE_RINGBUF);
   __uint(max_entries, 1 << 24); // 16777216 or 2^24 entries
@@ -141,20 +185,67 @@ static u64 filter_packet(struct bpf_map *map, u32 *key,
 
 
 SEC("tc")
-int intercept_packets_tc_egress(struct __sk_buff *skb){
+int intercept_packets_tc_egress(struct __sk_buff *ctx){
   //Parse skbuff to create the packet struct and pass that to filter_packets
   struct packet pk;
   pk.direction = Egress;
+  // We mark the start and end of our ethernet frame
+  void *ethernet_start = (void *)(long)ctx->data;
+  void *ethernet_end = (void *)(long)ctx->data_end;
 
+  struct ethhdr *ethernet_frame = ethernet_start;
+  // Check if we have the entire ethernet frame
+  if ((void *)ethernet_frame + sizeof(*ethernet_frame) <= ethernet_end) {
+    struct iphdr *ip_packet = ethernet_start + sizeof(*ethernet_frame);
 
+    // Check if the IP packet is within the bounds of ethernet frame
+    if ((void *)ip_packet + sizeof(*ip_packet) <= ethernet_end) {
+          // extract info from the IP packet
+      struct packet pk;
+      pk.source_ip = ip_packet->saddr;
+      pk.dest_ip = ip_packet->daddr;
+      pk.protocol = ip_packet->protocol;
+      pk.size = (ethernet_end - ethernet_start);
+      pk.dest_port = pk.source_port = 0;
+      pk.is_dropped = 0;
+    }
+          // check the protocol and get port
+      if (pk.protocol == IPPROTO_TCP) {
+        struct tcphdr *tcp = (void *)ip_packet + sizeof(*ip_packet);
+        if ((void *)tcp + sizeof(*tcp) <= ethernet_end) {
+          // Checking if the destination port matches with the specified port
+          pk.source_port = tcp->source;
+          pk.dest_port = tcp->dest;
+        }
+      }
 
+      if (pk.protocol == IPPROTO_UDP) {
+        struct udphdr *udp = (void *)ip_packet + sizeof(*ip_packet);
+        if ((void *)udp + sizeof(*udp) <= ethernet_end) {
+          // Checking if the destination port matches with the specified port
+          pk.source_port = udp->source;
+          pk.dest_port = udp->dest;
+        }
+      }
+      struct lookup_ctx data = {
+          .pk = &pk,
+          .tc_output = 0,
+      };
+      bpf_for_each_map_elem(&filter_rules, filter_packet, &data, 0);
+        push_log(&pk);
+      if(data.tc_output == TC_ACT_SHOT){
+        return TC_ACT_SHOT;
+      }
+      return TC_ACT_OK;
+  }
+//------
+  //First Try
   //create a copy of skbuff locally
   // currently failing verification
   // struct __sk_buff localskb;
   // int status = bpf_skb_load_bytes(skb,0,&localskb,sizeof(struct __sk_buff));
   // if (!status){
   //     return TC_ACT_SHOT; //for testing
-      
   // }
 
   // pk.dest_ip = localskb.remote_ip4;
@@ -164,6 +255,7 @@ int intercept_packets_tc_egress(struct __sk_buff *skb){
   // pk.protocol = localskb.protocol;
 
 
+  //Second Try
   //individually filling
   // bpf_skb_load_bytes(skb,sizeof(__u32)*OFFSET_REMOTE_IP,&pk.dest_ip,sizeof(__u32));
   // bpf_skb_load_bytes(skb,sizeof(__u32)*OFFSET_LOCAL_IP,&pk.source_ip,sizeof(__u32));
@@ -171,35 +263,56 @@ int intercept_packets_tc_egress(struct __sk_buff *skb){
   // bpf_skb_load_bytes(skb,sizeof(__u32)*OFFSET_REMOTE_PORT,&pk.dest_port,sizeof(__u32));
   // bpf_skb_load_bytes(skb,sizeof(__u32)*OFFSET_PROTOCOL,&pk.protocol,sizeof(__u32));
 
-  //Direct packet access
+  //Third Try
+  //Direct packet access doesn't work with socket filter programs smh :(
   // pk.dest_ip = skb->remote_ip4;
-  // pk.dest_port = skb->remote_port;
+  // pk.dest_port = skb->remote_port>>16;
   // pk.source_ip = skb->local_ip4;
-  // pk.source_port = skb->local_port;
+  // pk.source_port = skb->local_port>>16;
   // pk.protocol = skb->protocol;
 
+  // void *pktdata = (void* )(long)skb->data;
+  // struct eth_hdr* eth = pktdata;
+  // void *pktdata_end = (void*)(long)skb->data_end;
+  // int key = 0,*ifindex;
+  // int ret;
 
-  struct lookup_ctx data = {
-    .pk = &pk,
-    .tc_output = 0,
-  };
-  bpf_for_each_map_elem(&filter_rules, filter_packet, &data, 0);
+  // if (pktdata+sizeof(*eth)>pktdata_end){
+  // push_log(&pk);
+  // return TC_ACT_SHOT;
+  // }
+  //   struct iphdr *iph = pktdata+sizeof(*eth);
+  //   pk.protocol = iph->protocol;
+  //   pk.source_ip = iph->saddr;
+  //   pk.dest_ip = iph->daddr;
+
+  //testing 
+
+
+  //------------
+
+  // struct lookup_ctx data = {
+  //   .pk = &pk,
+  //   .tc_output = 0,
+  // };
+  // bpf_for_each_map_elem(&filter_rules, filter_packet, &data, 0);
   
-  if(data.tc_output == TC_ACT_SHOT){
-        pk.is_dropped = 1;
-        struct filter_rule *fr = data.fr;
-        // network security event logs only work on kernel 5.16
-#if LINUX_KERNEL_VERSION >= KERNEL_VERSION(5, 16, 0)
-        bpf_printk("Rule: %u %u %u %u. Packet %u %u %u %u", fr->source_ip,
-                   fr->source_port, fr->dest_port, fr->protocol, pk.source_ip,
-                   pk.source_port, pk.dest_port, pk.protocol);
-#endif
-        push_log(&pk);
-        return TC_ACT_SHOT;
+//   if(data.tc_output == TC_ACT_SHOT){
+//         pk.is_dropped = 1;
+//         struct filter_rule *fr = data.fr;
+//         // network security event logs only work on kernel 5.16
+// #if LINUX_KERNEL_VERSION >= KERNEL_VERSION(5, 16, 0)
+//         bpf_printk("Rule: %u %u %u %u. Packet %u %u %u %u", fr->source_ip,
+//                    fr->source_port, fr->dest_port, fr->protocol, pk.source_ip,
+//                    pk.source_port, pk.dest_port, pk.protocol);
+// #endif
+//         push_log(&pk);
+//         return TC_ACT_SHOT;
 
-  }
+//   }
+  pk.source_ip = 100;
   push_log(&pk);
-  return TC_ACT_OK;
+  return TC_ACT_SHOT;
 }
 
 
