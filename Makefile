@@ -30,4 +30,4 @@ build: generate
 
 generate:
 	bpftool btf dump file /sys/kernel/btf/vmlinux format c > $(BPF_DIR)/vmlinux.h
-	clang -g -O2 -c -target bpf -o $(BPF_DIR)/daemon.o $(BPF_DIR)/daemon.c
+	clang -g -O2 -I/usr/include/linux -c -target bpf -o $(BPF_DIR)/daemon.o $(BPF_DIR)/daemon.c

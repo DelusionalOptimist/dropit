@@ -5,4 +5,5 @@ type FilterRuleBytes struct {
 	SourcePort      uint16
 	DestinationPort uint16
 	Protocol        uint8
+	Direction       uint8
 }
