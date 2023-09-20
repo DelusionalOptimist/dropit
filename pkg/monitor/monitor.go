@@ -124,18 +124,18 @@ func (m *Monitor) InitBPF(interfaceName string, bpfModule *bpf.Module) error {
 
 	//Disabled for testing...
 	//XDP initialiasation
-	// xdpProg, err := bpfModule.GetProgram(XDP_PROG_NAME)
-	// if xdpProg == nil {
-	// 	if err != nil {
-	// 		return fmt.Errorf("Failed to get xdp program %s", err)
-	// 	}
-	// 	return fmt.Errorf("Empty xdp program loaded")
-	// }
+	xdpProg, err := bpfModule.GetProgram(XDP_PROG_NAME)
+	if xdpProg == nil {
+		if err != nil {
+			return fmt.Errorf("Failed to get xdp program %s", err)
+		}
+		return fmt.Errorf("Empty xdp program loaded")
+	}
 
-	// _, err = xdpProg.AttachXDP(interfaceName)
-	// if err != nil {
-	// 	return err
-	// }
+	_, err = xdpProg.AttachXDP(interfaceName)
+	if err != nil {
+		return err
+	}
 
 	//TC initialisation
 	hook := bpfModule.TcHookInit()
@@ -339,7 +339,6 @@ func parseByteData(data []byte) types.Packet {
 			DestPort:   binary.BigEndian.Uint16(data[14:16]),
 			Protocol:   types.GetProtoName(data[16]),
 			Status:     "Passed",
-
 			// Using gopacket
 			//Protocol: layers.IPProtocol(data[16]).String(),
 		}
@@ -353,6 +352,8 @@ func parseByteData(data []byte) types.Packet {
 		if ok {
 			pk.DestIP = dstIP.String()
 		}
+
+		pk.Direction = config.DirectionIntToString(uint8(data[18]))
 
 		isDropped := data[17]
 		if isDropped == 1 {

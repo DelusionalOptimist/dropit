@@ -147,6 +147,7 @@ static void push_log(struct packet *pk) {
   packet->protocol = pk->protocol;
   packet->size = pk->size;
   packet->is_dropped = pk->is_dropped;
+  packet->direction = pk->direction;
 
   bpf_ringbuf_submit(packet, 0);
 }
@@ -232,85 +233,14 @@ int intercept_packets_tc_egress(struct __sk_buff *ctx){
           .tc_output = 0,
       };
       bpf_for_each_map_elem(&filter_rules, filter_packet, &data, 0);
-        push_log(&pk);
       if(data.tc_output == TC_ACT_SHOT){
+        pk.is_dropped = 1;
+        push_log(&pk);
         return TC_ACT_SHOT;
       }
+      push_log(&pk);
       return TC_ACT_OK;
   }
-//------
-  //First Try
-  //create a copy of skbuff locally
-  // currently failing verification
-  // struct __sk_buff localskb;
-  // int status = bpf_skb_load_bytes(skb,0,&localskb,sizeof(struct __sk_buff));
-  // if (!status){
-  //     return TC_ACT_SHOT; //for testing
-  // }
-
-  // pk.dest_ip = localskb.remote_ip4;
-  // pk.dest_port = localskb.remote_port;
-  // pk.source_ip = localskb.local_ip4;
-  // pk.source_port = localskb.local_port;
-  // pk.protocol = localskb.protocol;
-
-
-  //Second Try
-  //individually filling
-  // bpf_skb_load_bytes(skb,sizeof(__u32)*OFFSET_REMOTE_IP,&pk.dest_ip,sizeof(__u32));
-  // bpf_skb_load_bytes(skb,sizeof(__u32)*OFFSET_LOCAL_IP,&pk.source_ip,sizeof(__u32));
-  // bpf_skb_load_bytes(skb,sizeof(__u32)*OFFSET_LOCAL_PORT,&pk.source_port,sizeof(__u32));
-  // bpf_skb_load_bytes(skb,sizeof(__u32)*OFFSET_REMOTE_PORT,&pk.dest_port,sizeof(__u32));
-  // bpf_skb_load_bytes(skb,sizeof(__u32)*OFFSET_PROTOCOL,&pk.protocol,sizeof(__u32));
-
-  //Third Try
-  //Direct packet access doesn't work with socket filter programs smh :(
-  // pk.dest_ip = skb->remote_ip4;
-  // pk.dest_port = skb->remote_port>>16;
-  // pk.source_ip = skb->local_ip4;
-  // pk.source_port = skb->local_port>>16;
-  // pk.protocol = skb->protocol;
-
-  // void *pktdata = (void* )(long)skb->data;
-  // struct eth_hdr* eth = pktdata;
-  // void *pktdata_end = (void*)(long)skb->data_end;
-  // int key = 0,*ifindex;
-  // int ret;
-
-  // if (pktdata+sizeof(*eth)>pktdata_end){
-  // push_log(&pk);
-  // return TC_ACT_SHOT;
-  // }
-  //   struct iphdr *iph = pktdata+sizeof(*eth);
-  //   pk.protocol = iph->protocol;
-  //   pk.source_ip = iph->saddr;
-  //   pk.dest_ip = iph->daddr;
-
-  //testing 
-
-
-  //------------
-
-  // struct lookup_ctx data = {
-  //   .pk = &pk,
-  //   .tc_output = 0,
-  // };
-  // bpf_for_each_map_elem(&filter_rules, filter_packet, &data, 0);
-  
-//   if(data.tc_output == TC_ACT_SHOT){
-//         pk.is_dropped = 1;
-//         struct filter_rule *fr = data.fr;
-//         // network security event logs only work on kernel 5.16
-// #if LINUX_KERNEL_VERSION >= KERNEL_VERSION(5, 16, 0)
-//         bpf_printk("Rule: %u %u %u %u. Packet %u %u %u %u", fr->source_ip,
-//                    fr->source_port, fr->dest_port, fr->protocol, pk.source_ip,
-//                    pk.source_port, pk.dest_port, pk.protocol);
-// #endif
-//         push_log(&pk);
-//         return TC_ACT_SHOT;
-
-//   }
-  pk.source_ip = 100;
   push_log(&pk);
   return TC_ACT_SHOT;
 }
