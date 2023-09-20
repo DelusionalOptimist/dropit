@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"reflect"
+	"strings"
 	"syscall"
 	"unsafe"
 
@@ -108,7 +109,11 @@ func (m *Monitor) loadConfig(cfgPath string) error {
 	if err != nil {
 		return err
 	}
-
+	rules := []string{}
+	for rulename := range m.FilterRuleBytesMap {
+		rules = append(rules, rulename)
+	}
+	log.Printf("Currently active rules: %s\n", strings.Join(rules, ","))
 	viper.OnConfigChange(m.configChangeHandler)
 	viper.WatchConfig()
 
@@ -227,8 +232,11 @@ func (m *Monitor) configChangeHandler(in fsnotify.Event) {
 			log.Println("Filter file updated. No changes to do...")
 			return
 		}
-
-		log.Printf("Filter file updated. Getting new filter rules...\n")
+		rules := []string{}
+		for rulename := range frMapNew {
+			rules = append(rules, rulename)
+		}
+		log.Printf("Filter file updated. Currently active rules: %s\n", strings.Join(rules, ","))
 
 		for newRule, newVal := range frMapNew {
 			if _, ok := m.FilterRuleBytesMap[newRule]; ok {
