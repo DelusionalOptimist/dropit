@@ -38,11 +38,12 @@ sourceIP: <string> (single IPV4 address OR * to match any address)
 destinationPort: <int|string> (single packet destination port OR * to match any port)
 sourcePort: <int|string> (single packet source port OR * to match any port)
 protocol: <string> (TCP | UDP | * to match any protocols)
+direction: <string> (ingress | egress) to decide in which direction to block the packet.
 ```
-**All the above fields are required.**
 
+**All the above fields are required.**
+Egress uses tc hooks and ingress dropping attaches on XDP.
 ## TODOs
 * list of IPs, CIDR, (maybe domain names?)
 * list, range of ports
 * actions - allow/block
-* direction - ingress/egress (need TC hooks)
