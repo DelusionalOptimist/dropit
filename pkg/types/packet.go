@@ -8,4 +8,5 @@ type Packet struct {
 	DestPort   uint16
 	Protocol   string
 	Status     string
+	Direction  string
 }

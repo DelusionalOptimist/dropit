@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"reflect"
+	"strings"
 	"syscall"
 	"unsafe"
 
@@ -17,6 +18,11 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/viper"
 )
+
+// TODO: Allow passing these from env variable
+var XDP_PROG_NAME = "intercept_packets_xdp_ingress"
+var TC_PROG_NAME = "intercept_packets_tc_egress"
+var BPF_ELF_NAME = "daemon.o"
 
 type Monitor struct {
 	// userspace filter map
@@ -50,7 +56,7 @@ func (m *Monitor) StartMonitor(interfaceName, cfgPath *string) error {
 		}
 	}
 
-	bpfModule, err := bpf.NewModuleFromFile("daemon.o")
+	bpfModule, err := bpf.NewModuleFromFile(BPF_ELF_NAME)
 	if err != nil {
 		return err
 	}
@@ -104,6 +110,11 @@ func (m *Monitor) loadConfig(cfgPath string) error {
 	if err != nil {
 		return err
 	}
+	rules := []string{}
+	for rulename := range m.FilterRuleBytesMap {
+		rules = append(rules, rulename)
+	}
+	log.Printf("Currently active rules: %s\n", strings.Join(rules, ","))
 
 	return nil
 }
@@ -120,7 +131,9 @@ func (m *Monitor) InitBPF(interfaceName string, bpfModule *bpf.Module) error {
 		return err
 	}
 
-	xdpProg, err := bpfModule.GetProgram("intercept_packets")
+	//Disabled for testing...
+	//XDP initialiasation
+	xdpProg, err := bpfModule.GetProgram(XDP_PROG_NAME)
 	if xdpProg == nil {
 		if err != nil {
 			return fmt.Errorf("Failed to get xdp program %s", err)
@@ -133,6 +146,34 @@ func (m *Monitor) InitBPF(interfaceName string, bpfModule *bpf.Module) error {
 		return err
 	}
 
+	//TC initialisation
+	hook := bpfModule.TcHookInit()
+	err = hook.SetInterfaceByName(interfaceName)
+	if err != nil {
+		return fmt.Errorf("failed to set tc hook on interface %s: %v", interfaceName, err)
+	}
+
+	hook.SetAttachPoint(bpf.BPFTcEgress)
+	err = hook.Create()
+	if err != nil {
+		if errno, ok := err.(syscall.Errno); ok && errno != syscall.EEXIST {
+			return fmt.Errorf("failed to create tc hook on interface %s: %v", interfaceName, err)
+		}
+	}
+
+	tcProg, err := bpfModule.GetProgram(TC_PROG_NAME)
+	if tcProg == nil {
+		return fmt.Errorf("could not find program %s: ", TC_PROG_NAME)
+	}
+
+	var tcOpts bpf.TcOpts
+	tcOpts.ProgFd = int(tcProg.FileDescriptor())
+	err = hook.Attach(&tcOpts)
+	if err != nil {
+		return err
+	}
+
+	// Initialising Map
 	m.FilterMap, err = bpfModule.GetMap("filter_rules")
 	if err != nil {
 		return err
@@ -149,8 +190,8 @@ func (m *Monitor) StartLogging(eventsChan chan ([]byte), ringbuf *bpf.RingBuffer
 
 	packetIdx := 0
 	log.Printf(
-		"|%-5s|%-15s|%-8s|%-15s|%-8s|%-5s|%-10s|%-8s|\n",
-		"No.", "Src IP", "Src Port", "Dest IP", "Dst Port", "Proto", "Size", "Status",
+		"|%-5s|%-15s|%-8s|%-15s|%-8s|%-5s|%-10s|%-8s|%-15s|\n",
+		"No.", "Src IP", "Src Port", "Dest IP", "Dst Port", "Proto", "Size", "Status", "Direction",
 	)
 
 	for {
@@ -160,7 +201,7 @@ func (m *Monitor) StartLogging(eventsChan chan ([]byte), ringbuf *bpf.RingBuffer
 			pk := parseByteData(eventBytes)
 
 			log.Printf(
-				"|%-5d|%-15s|%-8d|%-15s|%-8d|%-5s|%-10d|%-8s|\n",
+				"|%-5d|%-15s|%-8d|%-15s|%-8d|%-5s|%-10d|%-8s|%-15s|\n",
 				packetIdx,
 				pk.SourceIP,
 				pk.SourcePort,
@@ -169,6 +210,7 @@ func (m *Monitor) StartLogging(eventsChan chan ([]byte), ringbuf *bpf.RingBuffer
 				pk.Protocol,
 				pk.Size,
 				pk.Status,
+				pk.Direction,
 			)
 
 		case sig := <-m.SigChan:
@@ -194,8 +236,11 @@ func (m *Monitor) configChangeHandler(in fsnotify.Event) {
 			log.Println("Filter file updated. No changes to do...")
 			return
 		}
-
-		log.Printf("Filter file updated. Getting new filter rules...\n")
+		rules := []string{}
+		for rulename := range frMapNew {
+			rules = append(rules, rulename)
+		}
+		log.Printf("Filter file updated. Currently active rules: %s\n", strings.Join(rules, ","))
 
 		for newRule, newVal := range frMapNew {
 			if _, ok := m.FilterRuleBytesMap[newRule]; ok {
@@ -306,7 +351,6 @@ func parseByteData(data []byte) types.Packet {
 			DestPort:   binary.BigEndian.Uint16(data[14:16]),
 			Protocol:   types.GetProtoName(data[16]),
 			Status:     "Passed",
-
 			// Using gopacket
 			//Protocol: layers.IPProtocol(data[16]).String(),
 		}
@@ -320,6 +364,8 @@ func parseByteData(data []byte) types.Packet {
 		if ok {
 			pk.DestIP = dstIP.String()
 		}
+
+		pk.Direction = config.DirectionIntToString(uint8(data[18]))
 
 		isDropped := data[17]
 		if isDropped == 1 {

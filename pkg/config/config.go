@@ -5,11 +5,34 @@ import (
 	"fmt"
 	"net/netip"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/DelusionalOptimist/dropit/pkg/types"
 	"github.com/spf13/viper"
 )
+
+func DirectionStringToInt(direction string) uint8 {
+	switch strings.ToLower(direction) {
+	case "ingress":
+		return 0
+	case "egress":
+		return 1
+	default:
+		return 2
+	}
+}
+
+func DirectionIntToString(direction uint8) string {
+	switch direction {
+	case 0:
+		return "ingress"
+	case 1:
+		return "egress"
+	default:
+		return "unknown"
+	}
+}
 
 type Config struct {
 	Rules []struct {
@@ -18,6 +41,7 @@ type Config struct {
 		SourcePort      string `yaml:"sourcePort"`
 		DestinationPort string `yaml:"destinationPort"`
 		Protocol        string `yaml:"protocol"`
+		Direction       string `yaml:"direction"`
 	} `yaml:"rules"`
 }
 
@@ -108,10 +132,11 @@ func (cfg *Config) parseConfig() (map[string]types.FilterRuleBytes, error) {
 		}
 
 		byteRule := types.FilterRuleBytes{
-			SourceIP: srcIP,
-			SourcePort: uint16(srcPort << 8 | srcPort >> 8),
-			DestinationPort: uint16(destPort << 8 | destPort >> 8),
+			SourceIP:        srcIP,
+			SourcePort:      uint16(srcPort<<8 | srcPort>>8),
+			DestinationPort: uint16(destPort<<8 | destPort>>8),
 			Protocol:        protocol,
+			Direction:       DirectionStringToInt(rule.Direction),
 		}
 
 		fr[rule.ID] = byteRule

@@ -1,6 +1,13 @@
 rules:
-  - id: "rule1"
+  - id: "drop-all-ingress"
     sourceIP: '*'
-    destinationPort: 8080
+    destinationPort: '*'
     sourcePort: '*'
     protocol: '*'
+    direction: ingress
+  - id: "drop-all-egress"
+    sourceIP: '*'
+    destinationPort: '*'
+    sourcePort: '*'
+    protocol: '*'
+    direction: egress
