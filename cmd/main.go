@@ -19,6 +19,6 @@ func main() {
 
 	err := mon.StartMonitor(InterfaceName, ConfigPath)
 	if err != nil {
-		log.Fatalln("Failed to initialize monitor:", err)
+		log.Fatalln("failed to initialize monitor:", err)
 	}
 }

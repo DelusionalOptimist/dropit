@@ -78,6 +78,13 @@ struct filter_rule {
   u16 dest_port;
   u8 protocol;
   u8 direction;
+  u64 rate_limit_time_window;
+  u64 rate_limit_max_packets;
+};
+
+struct rate_limit {
+  u64 last_time;
+  u64 packets;
 };
 
 enum {
@@ -125,6 +132,12 @@ struct {
   __uint(max_entries, NO_OF_RULES); // 256 or 2^8 filter rules
 } filter_rules SEC(".maps");
 
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __type(key, u32);
+  __type(value, struct rate_limit);
+  __uint(max_entries, 1 << 24); // 256 or 2^8 entries
+} rate_limit_map SEC(".maps");
 // The same lookup_ctx will be used for both XDP and tc related filtering. Different fields will be set depending on filter_rule->direction.
 struct lookup_ctx {
   struct packet *pk;
@@ -167,9 +180,41 @@ static u64 filter_packet(struct bpf_map *map, u32 *key,
      (value->source_port == MATCH_ALL || value->source_port == pk->source_port) && //match source port
      (value->dest_port == MATCH_ALL || value->dest_port == pk->dest_port) && // match destination port
      (value->protocol == MATCH_ALL || value->protocol == pk->protocol)){ // match protocol
-          ctx->xdp_output = XDP_DROP;
-          ctx->fr = value;
-          return 1;
+
+    // Handle rate limiting
+     if(value -> rate_limit_time_window != 0){
+        u32 key = value->source_ip;
+        struct rate_limit *rl = bpf_map_lookup_elem(&rate_limit_map, &key);
+        if(rl == NULL){
+          struct rate_limit new_rl = {
+            .last_time = bpf_ktime_get_ns(),
+            .packets = 1,
+          };
+          bpf_map_update_elem(&rate_limit_map, &key, &new_rl, BPF_ANY);
+        } else {
+          u64 current_time = bpf_ktime_get_ns();
+
+          // Has time window passed? So reset
+          if(current_time - rl->last_time > value->rate_limit_time_window * 1000000000){
+            ctx->xdp_output = XDP_PASS;
+            rl->last_time = current_time;
+            rl->packets = 1;
+          } else {// If withing the window, count packets
+            if(rl->packets >= value->rate_limit_max_packets){
+              ctx->xdp_output = XDP_DROP;
+              ctx->fr = value;
+              return 1;
+            }
+            rl->packets++;
+          }
+        }
+        return 0;
+    }
+
+    //Default case to drop the packet
+    ctx->xdp_output = XDP_DROP;
+    ctx->fr = value;
+    return 1;
   }
 
   if((value->direction == Egress) && // Use tc filtering on Egress
